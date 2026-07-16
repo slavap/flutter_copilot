@@ -15,8 +15,6 @@
 
 https://github.com/user-attachments/assets/7dcb8504-00b3-4f68-80d3-19f74df75417
 
-Note: this is clearly vibe-coded to make the demo faster, don't wanna hear anyone opening an issue mentioning this please!
-
 > **If you find flutter_copilot interesting or useful, please star the repo.** It helps others discover the project and encourages continued development. Every star counts.
 
 ---
@@ -45,6 +43,12 @@ That single line can navigate multiple screens, toggle controls, fill forms, and
 - [Configuration](#configuration)
 - [Supported Actions](#supported-actions)
 - [Safety & Confirmation](#safety--confirmation)
+- [Retry & Recovery](#retry--recovery)
+- [Conversation Memory](#conversation-memory)
+- [Custom Tools](#custom-tools)
+- [Parallel Actions](#parallel-actions)
+- [Analytics & Metrics](#analytics--metrics)
+- [Screenshot Fallback](#screenshot-fallback)
 - [Progress Events](#progress-events)
 - [LLM Providers](#llm-providers)
 - [Help the Copilot See Your UI](#help-the-copilot-see-your-ui)
@@ -52,6 +56,9 @@ That single line can navigate multiple screens, toggle controls, fill forms, and
 - [Use Cases](#use-cases)
 - [Example App](#example-app)
 - [Testing](#testing)
+- [Limitations](#limitations)
+- [Performance](#performance)
+- [Migration Guide](#migration-guide)
 - [Contributing](#contributing)
 - [License](#license)
 
@@ -172,8 +179,14 @@ Each cycle:
 | **Semantics-first** | Reads Flutter's semantics tree — no screenshots, no OCR, no vision models |
 | **18 action types** | Tap, long press, type, clear, replace, scroll, drag, slider, dismiss, keyboard, and more |
 | **Action batching** | Multiple independent actions in a single model step |
+| **Parallel execution** | Independent batched actions run concurrently via `Future.wait` |
 | **Safety policy** | Built-in guardrails block destructive actions (payments, deletion, logout) |
 | **Confirmation flow** | Sensitive actions pause and ask the app/user before proceeding |
+| **Retry & recovery** | Exponential backoff for transient LLM failures |
+| **Conversation memory** | Multi-turn context across runs within a session |
+| **Custom tools** | Extend the action set with developer-defined handlers |
+| **Analytics & metrics** | Track success rates, duration, step counts, and token usage |
+| **Screenshot fallback** | Optional vision context for widgets with poor semantics |
 | **Event streaming** | Real-time progress events for UI feedback and logging |
 | **Provider-agnostic** | Works with OpenAI and any OpenAI-compatible API |
 | **Sealed result types** | `CopilotCompleted`, `CopilotFailed`, `CopilotCancelled`, `CopilotMaxStepsExceeded` |
@@ -268,6 +281,31 @@ CopilotConfig(
 
   // Print copilot events with debugPrint (default: false)
   debugLogging: true,
+
+  // --- v0.12.0 new options ---
+
+  // Retry configuration for transient LLM failures
+  retryConfig: RetryConfig(
+    maxRetries: 3,
+    baseDelay: Duration(milliseconds: 500),
+    maxDelay: Duration(seconds: 10),
+  ),
+
+  // Enable multi-turn conversation memory
+  memoryStore: InMemoryStore(),
+  memoryContextLimit: 5,
+
+  // Register custom action handlers
+  customActions: {
+    'my_custom_tool': MyCustomHandler(),
+  },
+
+  // Collect usage metrics
+  metricsCollector: MetricsCollector(),
+
+  // Optional screenshot fallback (default: false)
+  enableScreenshots: false,
+  screenshotAsFallback: true,
 )
 ```
 
@@ -298,13 +336,14 @@ The copilot can perform **18 distinct action types** against the Flutter UI:
 | Done | `done` | Mark the goal as complete |
 | Fail | `fail` | Stop when the goal cannot be completed |
 
-### Action Batching
+### Action Batching & Parallel Execution
 
-The model can batch multiple independent actions in a single response when all targets are visible on the current screen and the actions do not depend on each other:
+The model can batch multiple independent actions in a single response. Independent actions (`type_text`, `clear_text`, `replace_text`, `tap` on different nodes) execute concurrently via `Future.wait`:
 
 ```dart
-// Model can batch these — both fields are visible, no navigation needed
+// Model batches these — both fields are visible, no navigation needed
 // tool_calls: [type_text("email_field", "alex@example.com"), type_text("name_field", "Alex")]
+// Both execute in parallel for faster completion
 ```
 
 Batching is not used across navigation, dialogs, scrolling, or any action whose result must reveal the next target. `done` and `fail` are never batched.
@@ -389,7 +428,7 @@ Use the names however your product team thinks:
 | `doNotTouchLabels` | Alias-style list for targets the copilot must never touch |
 | `blockedLabels` | Approval-gated labels; replaces the default list |
 | `sensitiveLabels` | Additional approval-gated labels |
-| `carefulLabels` | Additional approval-gated labels for “be careful” flows |
+| `carefulLabels` | Additional approval-gated labels for "be careful" flows |
 | `allowDestructiveActions` | Bypasses approval-gated labels, but never bypasses denied/do-not-touch labels |
 
 ### Confirmation Flow
@@ -416,6 +455,205 @@ onConfirmationRequest: (CopilotConfirmationRequest request) async {
 ```
 
 If the callback is not set, sensitive actions are denied by default.
+
+---
+
+## Retry & Recovery
+
+Transient LLM failures (network timeouts, rate limits, server errors) are automatically retried with configurable exponential backoff:
+
+```dart
+CopilotConfig(
+  llm: OpenAILlmAdapter(apiKey: '...', model: 'gpt-4.1'),
+  retryConfig: RetryConfig(
+    maxRetries: 3,                    // Maximum retry attempts
+    baseDelay: Duration(milliseconds: 500),  // Initial delay
+    maxDelay: Duration(seconds: 10),  // Maximum delay cap
+    exponentialBackoff: true,         // Exponential (true) or linear (false)
+  ),
+)
+```
+
+### How it works
+
+- Only `LlmException` errors are retried by default
+- Custom retryable predicates can extend this behavior
+- Non-retryable errors (invalid API key, malformed request) fail immediately
+- All retry attempts are logged via the event stream
+
+```dart
+// Custom retryable predicate
+RetryEngine(
+  config,
+  retryable: (error) => error is LlmException || error is TimeoutException,
+)
+```
+
+---
+
+## Conversation Memory
+
+The copilot remembers previous goals and results within a session, enabling multi-turn workflows:
+
+```dart
+CopilotConfig(
+  llm: OpenAILlmAdapter(apiKey: '...', model: 'gpt-4.1'),
+  memoryStore: InMemoryStore(),
+  memoryContextLimit: 5,  // Load last 5 memories as context
+)
+```
+
+### How it works
+
+- Each completed run is stored as a `MemoryEntry` with goal, result, and timestamp
+- At the start of each new run, recent memories are injected as context
+- The LLM sees previous actions and outcomes, enabling continuity
+
+```dart
+// First run
+await controller.run('Open settings and enable dark mode');
+// Result: CopilotCompleted('Dark mode enabled')
+
+// Second run — copilot knows about the previous action
+await controller.run('Now enable notifications too');
+// The LLM receives context: "Previous session context: Goal: Open settings... Result: Dark mode enabled"
+```
+
+### Custom memory stores
+
+Implement `MemoryStore` for persistent storage:
+
+```dart
+class FirestoreMemoryStore implements MemoryStore {
+  @override
+  Future<void> add(MemoryEntry entry) async {
+    await FirebaseFirestore.instance.collection('copilot_memory').add(entry.toJson());
+  }
+
+  @override
+  Future<List<MemoryEntry>> getRecent({int limit = 5}) async {
+    final snapshot = await FirebaseFirestore.instance
+        .collection('copilot_memory')
+        .orderBy('timestamp', descending: true)
+        .limit(limit)
+        .get();
+    return snapshot.docs.map((doc) => MemoryEntry.fromJson(doc.data())).toList();
+  }
+
+  @override
+  Future<void> clear() async {
+    // Clear logic
+  }
+}
+```
+
+---
+
+## Custom Tools
+
+Extend the copilot's action set without forking the package:
+
+```dart
+class MyDatabaseHandler extends CustomActionHandler {
+  @override
+  Future<ActionResult> execute(CustomAction action) async {
+    final query = action.args['query'] as String;
+    // Execute your custom logic
+    return ActionResult.success('Query executed: $query');
+  }
+}
+
+CopilotConfig(
+  llm: OpenAILlmAdapter(apiKey: '...', model: 'gpt-4.1'),
+  customActions: {
+    'database_query': MyDatabaseHandler(),
+    'send_notification': MyNotificationHandler(),
+  },
+)
+```
+
+### How it works
+
+- When the model emits a tool call matching a registered handler, it's routed to your `CustomActionHandler`
+- The handler receives a `CustomAction` with the tool name and raw arguments
+- Return `ActionResult.success()` or `ActionResult.failure()` to continue or stop the run
+- Unregistered tools fall back to the default `ActionExecutor`
+
+---
+
+## Parallel Actions
+
+Independent actions execute concurrently for faster completion:
+
+```dart
+// Model batches: fill two visible text fields
+// tool_calls: [
+//   type_text("email_field", "alex@example.com"),
+//   type_text("name_field", "Alex"),
+// ]
+// Both execute in parallel via Future.wait
+```
+
+### Classification
+
+| Action Type | Execution |
+|---|---|
+| `type_text`, `clear_text`, `replace_text`, `tap` | Parallel (independent) |
+| `scroll`, `drag`, `dismiss`, `system_back` | Sequential (dependent) |
+| `done`, `fail`, `request_confirmation` | Sequential (terminal) |
+
+The system prompt instructs the model to only batch actions on different visible nodes that don't depend on each other.
+
+---
+
+## Analytics & Metrics
+
+Track copilot usage, success rates, and performance:
+
+```dart
+final metricsCollector = MetricsCollector();
+
+CopilotConfig(
+  llm: OpenAILlmAdapter(apiKey: '...', model: 'gpt-4.1'),
+  metricsCollector: metricsCollector,
+)
+
+// After runs complete
+final summary = metricsCollector.summary;
+print('Success rate: ${(summary.successRate * 100).toStringAsFixed(1)}%');
+print('Avg steps: ${summary.averageSteps.toStringAsFixed(1)}');
+print('Avg duration: ${summary.averageDuration.inSeconds}s');
+```
+
+### Metrics recorded per run
+
+- **Goal** — the natural-language objective
+- **Duration** — wall-clock time from start to finish
+- **Steps** — number of observe-plan-act cycles
+- **Actions executed** — total UI actions performed
+- **Success** — whether the goal was completed
+- **Failure reason** — why the run failed (if applicable)
+
+---
+
+## Screenshot Fallback
+
+Optional vision context for widgets with poor semantics:
+
+```dart
+CopilotConfig(
+  llm: OpenAILlmAdapter(apiKey: '...', model: 'gpt-4.1'),
+  enableScreenshots: true,        // Enable screenshot capture
+  screenshotAsFallback: true,     // Only when semantics are insufficient
+)
+```
+
+### How it works
+
+- When enabled, a screenshot is captured alongside the semantics tree
+- The screenshot is appended to the scene JSON sent to the LLM
+- In fallback mode, screenshots are only sent when the compressed scene has fewer than 5 interactive nodes
+- Screenshots add token cost — use only when needed
 
 ---
 
@@ -612,6 +850,8 @@ flutter_copilot/
 ├── scene/
 │   ├── SceneCapture        # Reads Flutter's live semantics tree
 │   ├── SceneCompressor     # Reduces scene to model-friendly JSON
+│   ├── SceneEnhancer       # Appends screenshot context to scene
+│   ├── ScreenshotCapture   # Optional screenshot capture
 │   ├── SceneGraph          # Captured UI representation
 │   └── SceneNode           # Individual semantics node
 │
@@ -624,11 +864,29 @@ flutter_copilot/
 │
 ├── actions/
 │   ├── CopilotAction       # Sealed action hierarchy (18 types)
+│   ├── CustomAction        # Developer-defined action wrapper
+│   ├── CustomActionHandler # Interface for custom action execution
 │   ├── ActionExecutor      # Executes actions via semantics or pointer events
 │   └── ActionResult        # Execution result with success/failure/recoverable
 │
 ├── safety/
 │   └── CopilotSafetyPolicy # Label-based guardrails for risky actions
+│
+├── retry/
+│   ├── RetryConfig         # Retry configuration (backoff, max attempts)
+│   └── RetryEngine         # Wraps operations with retry logic
+│
+├── memory/
+│   ├── MemoryStore         # Abstract interface for persisting run history
+│   ├── InMemoryStore       # In-memory implementation
+│   └── MemoryEntry         # Single memory record (goal, result, timestamp)
+│
+├── analytics/
+│   ├── CopilotMetrics      # Metrics for a single run
+│   └── MetricsCollector    # Stores history and computes summaries
+│
+├── session/
+│   └── PromptBuilder       # Builds LLM messages (system prompt, memory, scene)
 │
 └── logging/
     └── CopilotEvent        # Sealed event hierarchy (10 event types)
@@ -642,12 +900,18 @@ User goal
     ▼
 CopilotSession.run()
     │
-    ├──▶ SceneCapture.capture()        → SemanticsNode tree
-    ├──▶ SceneCompressor.compress()    → SceneGraph (compressed)
-    ├──▶ LlmAdapter.complete()         → LlmResponse (tool calls)
-    ├──▶ CopilotAction.fromToolCall()  → CopilotAction
-    ├──▶ SafetyPolicy.evaluate()       → CopilotSafetyDecision
-    ├──▶ ActionExecutor.execute()      → ActionResult
+    ├──▶ MemoryStore.getRecent()      → Previous context
+    ├──▶ SceneCapture.capture()       → SemanticsNode tree
+    ├──▶ SceneCompressor.compress()   → SceneGraph (compressed)
+    ├──▶ ScreenshotCapture.capture()  → Optional base64 PNG
+    ├──▶ SceneEnhancer.enhance()      → Enhanced scene JSON
+    ├──▶ RetryEngine.run()            → Retry wrapper
+    │   └──▶ LlmAdapter.complete()   → LlmResponse (tool calls)
+    ├──▶ CopilotAction.fromToolCall() → CopilotAction
+    ├──▶ SafetyPolicy.evaluate()      → CopilotSafetyDecision
+    ├──▶ ActionExecutor.execute()     → ActionResult
+    ├──▶ MetricsCollector.record()    → Metrics snapshot
+    ├──▶ MemoryStore.add()            → Persist run
     │
     └──▶ Repeat until done, fail, or maxSteps
 ```
@@ -675,7 +939,7 @@ CopilotSession.run()
 - **Mobile agent foundation** — A semantics-first framework for building app agents.
 - **Provider-agnostic** — Swap models without changing app code.
 - **Inspectable behavior** — Log, replay, and evaluate every action.
-- **Custom tool extension** — Add new action types by extending `CopilotAction`.
+- **Custom tool extension** — Add new action types via `CustomActionHandler`.
 
 ---
 
@@ -745,37 +1009,53 @@ testWidgets('completes a multi-step plan', (tester) async {
 ---
 
 ## Limitations
-- Requires Flutter semantics. Widgets without semantics labels are invisible to the copilot.
-- LLM latency adds to action execution time (typically 1-3s per step depending on provider).
-- Complex multi-finger gestures (pinch-to-zoom, rotate) not supported.
-- Screenshot fallback is experimental and adds token cost.
-- Maximum 12 steps by default (configurable via maxSteps).
+
+- **Semantics required** — Widgets without semantics labels are invisible to the copilot.
+- **LLM latency** — Each step adds 1-3s depending on provider and network.
+- **Multi-finger gestures** — Pinch-to-zoom, rotate, and complex gestures not supported.
+- **Screenshot cost** — Enabling screenshots adds token cost to each request.
+- **Step limit** — Maximum 12 steps by default (configurable via `maxSteps`).
+- **Single session** — Only one copilot run can be active at a time.
 
 ## Performance
-- Typical token usage: 500-2000 per step depending on screen complexity.
-- Scene capture: <50ms for most screens.
-- Action execution: <100ms for semantics actions, <500ms for pointer events.
-- Scene compression reduces token count by 60-80% on typical screens.
+
+| Metric | Typical Value |
+|---|---|
+| Token usage per step | 500–2,000 (depends on screen complexity) |
+| Scene capture | <50ms |
+| Scene compression | 60–80% token reduction |
+| Semantics action execution | <100ms |
+| Pointer event execution | <500ms |
+| Full step (capture → LLM → execute) | 1–3s |
+
+---
 
 ## Migration Guide
 
 ### Upgrading to 0.12.0
 
-New optional fields in CopilotConfig (all backward-compatible):
-- `retryConfig` — configure retry behavior for LLM failures
-- `memoryStore` — enable multi-turn conversation memory
-- `customActions` — register custom action handlers
-- `metricsCollector` — collect usage metrics
-- `enableScreenshots` — optional screenshot fallback (default: false)
+**No breaking changes.** All existing APIs remain unchanged.
+
+New optional fields in `CopilotConfig`:
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `retryConfig` | `RetryConfig?` | `null` | Retry behavior for LLM failures |
+| `memoryStore` | `MemoryStore?` | `null` | Multi-turn conversation memory |
+| `memoryContextLimit` | `int` | `10` | Max memory entries loaded as context |
+| `customActions` | `Map<String, CustomActionHandler>` | `{}` | Custom action handlers |
+| `metricsCollector` | `MetricsCollector?` | `null` | Usage metrics collection |
+| `enableScreenshots` | `bool` | `false` | Optional screenshot fallback |
+| `screenshotAsFallback` | `bool` | `true` | Only screenshot when semantics insufficient |
 
 New classes:
-- RetryConfig, RetryEngine — retry logic
-- MemoryStore, InMemoryStore — conversation memory
-- CustomAction, CustomActionHandler — custom tool extension
-- CopilotMetrics, MetricsCollector — analytics
-- ScreenshotCapture, SceneEnhancer — screenshot fallback
 
-All existing APIs remain unchanged. No breaking changes.
+- `RetryConfig`, `RetryEngine` — retry logic with exponential backoff
+- `MemoryStore`, `InMemoryStore`, `MemoryEntry` — conversation memory
+- `CustomAction`, `CustomActionHandler` — custom tool extension
+- `CopilotMetrics`, `MetricsCollector` — analytics
+- `ScreenshotCapture`, `SceneEnhancer` — screenshot fallback
+- `PromptBuilder` — LLM message construction
 
 ---
 
