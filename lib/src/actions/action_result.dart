@@ -1,4 +1,7 @@
+import 'package:meta/meta.dart';
+
 /// Result of executing a UI action.
+@immutable
 class ActionResult {
   const ActionResult._({
     required this.success,

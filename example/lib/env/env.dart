@@ -1,9 +1,15 @@
+import 'package:envied/envied.dart';
+
+part 'env.g.dart';
+
+@Envied(path: '.env', requireEnvFile: true)
 abstract final class Env {
-  static const String openaiApiKey = String.fromEnvironment('OPENAI_API_KEY');
+  @EnviedField(varName: 'OPENAI_API_KEY', defaultValue: '', obfuscate: true)
+  static final String openaiApiKey = _Env.openaiApiKey;
 
-  static const String openaiModel =
-      String.fromEnvironment('OPENAI_MODEL', defaultValue: 'gpt-4.1');
+  @EnviedField(varName: 'OPENAI_MODEL', defaultValue: 'gpt-4.1')
+  static final String openaiModel = _Env.openaiModel;
 
-  static const String openaiEndpoint =
-      String.fromEnvironment('OPENAI_ENDPOINT');
+  @EnviedField(varName: 'OPENAI_ENDPOINT', defaultValue: '')
+  static final String openaiEndpoint = _Env.openaiEndpoint;
 }

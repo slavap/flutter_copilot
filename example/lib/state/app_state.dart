@@ -13,6 +13,8 @@ class AppState extends ChangeNotifier {
       _events.add(describeEvent(event));
       notifyListeners();
     });
+    displayNameController.addListener(notifyListeners);
+    emailController.addListener(notifyListeners);
     searchController.addListener(notifyListeners);
   }
 
@@ -41,8 +43,9 @@ class AppState extends ChangeNotifier {
     DemoTask('Invite Morgan to workspace'),
     DemoTask('Archive old invoices'),
   ];
-  final promptController =
-      TextEditingController(text: 'Open settings and enable dark mode');
+  final promptController = TextEditingController(
+      text:
+          'Open settings and enable dark mode, then on my profile just set some random name, email and some random private notes just for testing, then toggle the auto-save profile, then enable weekly summary option in my profile screen and hit save button, after that show me all active tasks in tasks section, then in enable dark mode and set a random different accent color theme option, enable push notifications, and finally land me again in the home screen.');
   final displayNameController = TextEditingController();
   final emailController = TextEditingController();
   final notesController = TextEditingController();
@@ -187,7 +190,7 @@ class AppState extends ChangeNotifier {
     final prompt = promptController.text.trim();
     final result = await _copilotController.run(
       prompt.isEmpty
-          ? 'Open settings and enable dark mode, then on my profile just set some random name, email and some random private notes just for testing, then toggle the auto-save profile, then enable weekly summary option in my profile screen and hit save button, after that show me all active tasks in tasks section, then in enable dark mode and set a random different accent color theme option, enable push notifications, and finally land me again in the home screen.'
+          ? 'Open settings and enable dark mode, then on my profile just set name to Gwhyyy,and set random email and some random private notes just for testing on your own, then toggle the auto-save profile option in that screen, then enable weekly summary option in my settings screen and hit save button, after that show me all active tasks in tasks section then wait for a bit and create a task with dummy data, then enable dark mode and set a random different accent color theme option randomly you choose, enable push notifications, and finally land me again in the home screen, and finally ask me for a approval asking me "was everything is good" and if I say yes then say "thank you" and if I say no then say "ok, I will try again" and then end the session.'
           : prompt,
     );
 
@@ -222,6 +225,8 @@ class AppState extends ChangeNotifier {
   @override
   void dispose() {
     _subscription?.cancel();
+    displayNameController.removeListener(notifyListeners);
+    emailController.removeListener(notifyListeners);
     searchController.removeListener(notifyListeners);
     promptController.dispose();
     displayNameController.dispose();

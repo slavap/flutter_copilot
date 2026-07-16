@@ -6,14 +6,32 @@ import 'scene_graph.dart';
 import 'scene_node.dart';
 
 /// Captures the current Flutter semantics tree.
+///
+/// Walks the active [SemanticsNode] tree and converts each node into a
+/// lightweight [SceneNode] with a public id, label, value, hint, actions,
+/// and flags. The resulting [SceneGraph] is what the LLM receives as
+/// input.
+///
+/// Use [resolve] to map a public scene node id back to a live
+/// [SemanticsNode] for gesture dispatch.
 class SceneCapture {
   /// Creates a scene capture helper.
+  ///
+  /// When [includeGeometry] is true, callers should include bounding-rect
+  /// coordinates in serialized scene output.
   SceneCapture({this.includeGeometry = false});
 
   /// Whether geometry should be included by callers that serialize scenes.
+  ///
+  /// When true, callers can include bounding-rect coordinates in the
+  /// compact JSON sent to the LLM. Defaults to false for smaller payloads.
   final bool includeGeometry;
 
   /// Captures the current semantics tree as a [SceneGraph].
+  ///
+  /// Returns an empty graph if no semantics owner is available (e.g. in
+  /// tests without a running app). Each node is assigned a sequential
+  /// public id (`n1`, `n2`, …) independent of the internal semantics id.
   SceneGraph capture() {
     final root = _rootSemanticsNode();
     if (root == null) {
@@ -44,6 +62,9 @@ class SceneCapture {
   }
 
   /// Resolves a public scene node id back to a live semantics node.
+  ///
+  /// Returns `null` if the id is not found in [graph] or if the
+  /// underlying semantics tree is no longer available.
   SemanticsNode? resolve(SceneGraph graph, String publicId) {
     final semanticsId = graph.semanticsIdFor(publicId);
     if (semanticsId == null) {

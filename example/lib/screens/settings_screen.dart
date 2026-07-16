@@ -78,7 +78,11 @@ class SettingsScreen extends StatelessWidget {
                 SwitchListTile(
                   contentPadding: EdgeInsets.zero,
                   title: const Text('Compact mode'),
-                  subtitle: const Text('Denser lists and controls'),
+                  subtitle: Text(
+                    state.compactMode
+                        ? 'Compact layout active'
+                        : 'Comfortable layout active',
+                  ),
                   value: state.compactMode,
                   onChanged: (v) => state.compactMode = v,
                 ),

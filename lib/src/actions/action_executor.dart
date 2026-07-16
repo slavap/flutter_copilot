@@ -11,6 +11,8 @@ import 'copilot_action.dart';
 
 /// Executes model-selected UI actions against Flutter semantics.
 class ActionExecutor {
+  static int _nextPointer = 0;
+
   /// Creates an action executor.
   ActionExecutor({
     SceneCapture? capture,
@@ -433,7 +435,7 @@ class ActionExecutor {
       'right' => Offset(-distance, 0),
       _ => Offset(0, -distance),
     };
-    const pointer = 24;
+    final pointer = _nextPointer++;
     GestureBinding.instance.handlePointerEvent(
         PointerDownEvent(pointer: pointer, position: start));
     GestureBinding.instance.handlePointerEvent(
@@ -475,7 +477,7 @@ class ActionExecutor {
 
   Future<void> _dragFromTo(Offset start, Offset end,
       {bool holdFirst = false}) async {
-    const pointer = 25;
+    final pointer = _nextPointer++;
     GestureBinding.instance.handlePointerEvent(
         PointerDownEvent(pointer: pointer, position: start));
     if (holdFirst) {

@@ -1,5 +1,7 @@
 import 'dart:ui';
 
+import 'package:meta/meta.dart';
+
 /// Semantics action visible to the copilot.
 enum SceneAction {
   /// Tap action.
@@ -64,6 +66,7 @@ enum SceneFlag {
 }
 
 /// Compact representation of one semantics node.
+@immutable
 class SceneNode {
   /// Creates a scene node.
   const SceneNode({

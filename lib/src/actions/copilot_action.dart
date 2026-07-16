@@ -1,9 +1,20 @@
+import 'package:meta/meta.dart';
+
 /// Action selected by the model.
+///
+/// A sealed class hierarchy representing every action the LLM can request.
+/// Use [fromToolCall] to parse an LLM tool call into the concrete subtype.
+/// Each action carries a [name] (the tool name) and an optional [targetId]
+/// (the scene node it acts on).
 sealed class CopilotAction {
   /// Creates a copilot action.
   const CopilotAction();
 
   /// Parses an action from an LLM tool call.
+  ///
+  /// [name] is the tool name returned by the model. [args] is the
+  /// tool's argument map. Throws if required arguments are missing or
+  /// have unexpected types.
   factory CopilotAction.fromToolCall(String name, Map<String, Object?> args) {
     final normalized = name.trim();
     return switch (normalized) {
@@ -55,9 +66,15 @@ sealed class CopilotAction {
   }
 
   /// Tool name for this action.
+  ///
+  /// Matches the tool name in the LLM's tool-call response (e.g. `'tap'`,
+  /// `'type_text'`, `'scroll'`).
   String get name;
 
   /// Public scene node id targeted by this action, when it has one.
+  ///
+  /// Returns `null` for actions that don't target a specific node, such
+  /// as [SystemBackAction], [WaitAction], [DoneAction], and [FailAction].
   String? get targetId {
     return switch (this) {
       TapAction(:final id) => id,
@@ -78,17 +95,22 @@ sealed class CopilotAction {
 }
 
 /// Taps a visible semantics node.
+///
+/// Maps to `SemanticsAction.tap`. The node must be interactive and
+/// visible on screen.
+@immutable
 class TapAction extends CopilotAction {
   /// Creates a tap action.
   const TapAction(this.id);
 
-  /// Public scene node id.
+  /// Public scene node id of the node to tap.
   final String id;
   @override
   String get name => 'tap';
 }
 
 /// Long-presses a visible semantics node.
+@immutable
 class LongPressAction extends CopilotAction {
   /// Creates a long-press action.
   const LongPressAction(this.id);
@@ -100,11 +122,15 @@ class LongPressAction extends CopilotAction {
 }
 
 /// Types text into a visible text field node.
+///
+/// Appends [text] to the current content of the field identified by [id].
+/// Use [ReplaceTextAction] to overwrite the entire field instead.
+@immutable
 class TypeTextAction extends CopilotAction {
   /// Creates a text input action.
   const TypeTextAction(this.id, this.text);
 
-  /// Public scene node id.
+  /// Public scene node id of the text field.
   final String id;
 
   /// Text to enter.
@@ -114,6 +140,7 @@ class TypeTextAction extends CopilotAction {
 }
 
 /// Clears text from a visible text field node.
+@immutable
 class ClearTextAction extends CopilotAction {
   /// Creates a clear-text action.
   const ClearTextAction(this.id);
@@ -125,6 +152,7 @@ class ClearTextAction extends CopilotAction {
 }
 
 /// Replaces all text in a visible text field node.
+@immutable
 class ReplaceTextAction extends CopilotAction {
   /// Creates a replace-text action.
   const ReplaceTextAction(this.id, this.text);
@@ -139,6 +167,7 @@ class ReplaceTextAction extends CopilotAction {
 }
 
 /// Sets the selection range in a visible text field node.
+@immutable
 class SetTextSelectionAction extends CopilotAction {
   /// Creates a set-text-selection action.
   const SetTextSelectionAction(this.id, this.start, this.end);
@@ -156,6 +185,7 @@ class SetTextSelectionAction extends CopilotAction {
 }
 
 /// Sends a keyboard editing/navigation action to the focused field.
+@immutable
 class KeyboardAction extends CopilotAction {
   /// Creates a keyboard action.
   const KeyboardAction(this.key);
@@ -167,6 +197,7 @@ class KeyboardAction extends CopilotAction {
 }
 
 /// Scrolls a visible scrollable node.
+@immutable
 class ScrollAction extends CopilotAction {
   /// Creates a scroll action.
   const ScrollAction(this.id, this.direction, this.amount);
@@ -184,6 +215,7 @@ class ScrollAction extends CopilotAction {
 }
 
 /// Drags from the center of a visible node.
+@immutable
 class DragAction extends CopilotAction {
   /// Creates a drag action.
   const DragAction(this.id, this.direction, this.amount);
@@ -201,6 +233,7 @@ class DragAction extends CopilotAction {
 }
 
 /// Long-presses, then drags from the center of a visible node.
+@immutable
 class LongPressDragAction extends CopilotAction {
   /// Creates a long-press-drag action.
   const LongPressDragAction(this.id, this.direction, this.amount);
@@ -218,6 +251,7 @@ class LongPressDragAction extends CopilotAction {
 }
 
 /// Drags a slider-like control to a normalized value.
+@immutable
 class SliderToValueAction extends CopilotAction {
   /// Creates a slider action.
   const SliderToValueAction(this.id, this.value);
@@ -232,6 +266,7 @@ class SliderToValueAction extends CopilotAction {
 }
 
 /// Uses semantic increase/decrease actions on a value control.
+@immutable
 class AdjustValueAction extends CopilotAction {
   /// Creates an adjust-value action.
   const AdjustValueAction(this.id, this.direction, this.steps);
@@ -249,6 +284,7 @@ class AdjustValueAction extends CopilotAction {
 }
 
 /// Dismisses a visible dismissible node.
+@immutable
 class DismissAction extends CopilotAction {
   /// Creates a dismiss action.
   const DismissAction(this.id);
@@ -260,6 +296,7 @@ class DismissAction extends CopilotAction {
 }
 
 /// Requests a system back navigation.
+@immutable
 class SystemBackAction extends CopilotAction {
   /// Creates a system back action.
   const SystemBackAction();
@@ -269,6 +306,7 @@ class SystemBackAction extends CopilotAction {
 }
 
 /// Requests user/app confirmation before continuing.
+@immutable
 class RequestConfirmationAction extends CopilotAction {
   /// Creates a confirmation request action.
   const RequestConfirmationAction(this.reason);
@@ -280,6 +318,7 @@ class RequestConfirmationAction extends CopilotAction {
 }
 
 /// Waits for loading or animation.
+@immutable
 class WaitAction extends CopilotAction {
   /// Creates a wait action.
   const WaitAction(this.duration);
@@ -291,28 +330,37 @@ class WaitAction extends CopilotAction {
 }
 
 /// Marks the goal complete.
+///
+/// Must be the only tool call in a response. The [summary] is included
+/// in the [CopilotCompleted] result.
+@immutable
 class DoneAction extends CopilotAction {
   /// Creates a done action.
   const DoneAction(this.summary);
 
-  /// Completion summary.
+  /// Completion summary describing what was accomplished.
   final String summary;
   @override
   String get name => 'done';
 }
 
 /// Marks the goal impossible.
+///
+/// Must be the only tool call in a response. The [reason] is included
+/// in the [CopilotFailed] result.
+@immutable
 class FailAction extends CopilotAction {
   /// Creates a fail action.
   const FailAction(this.reason);
 
-  /// Failure reason.
+  /// Failure reason describing why the goal cannot be achieved.
   final String reason;
   @override
   String get name => 'fail';
 }
 
 /// Represents an unsupported model tool call.
+@immutable
 class UnknownAction extends CopilotAction {
   /// Creates an unknown action.
   const UnknownAction(this.name, this.args);

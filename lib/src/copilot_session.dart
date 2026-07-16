@@ -3,21 +3,43 @@ import 'dart:convert';
 import 'package:flutter/widgets.dart' hide DismissAction, ScrollAction;
 
 import 'actions/action_executor.dart';
+import 'actions/action_result.dart';
 import 'actions/copilot_action.dart';
+import 'actions/custom_action.dart';
+import 'analytics/copilot_metrics.dart';
 import 'llm/llm_adapter.dart';
 import 'llm/llm_message.dart';
 import 'llm/llm_tool.dart';
 import 'logging/copilot_event.dart';
 import 'copilot_config.dart';
 import 'copilot_run_result.dart';
+import 'memory/memory_entry.dart';
+import 'retry/retry_engine.dart';
 import 'scene/scene_capture.dart';
 import 'scene/scene_compressor.dart';
+import 'scene/scene_enhancer.dart';
 import 'scene/scene_graph.dart';
 import 'scene/scene_node.dart';
+import 'scene/screenshot_capture.dart';
+import 'session/prompt_builder.dart';
 
 /// One autonomous observe-plan-act run.
+///
+/// A session owns a single execution loop: it captures the current Flutter
+/// UI via the semantics tree, sends it to an LLM, parses the returned tool
+/// calls into [CopilotAction]s, executes them, and repeats until the goal
+/// is met, fails, or the step limit is reached.
+///
+/// Sessions are created internally by [CopilotController.run] and should
+/// not be instantiated directly in application code.
 class CopilotSession {
   /// Creates a copilot session.
+  ///
+  /// [goal] is the natural-language objective. [config] provides the LLM
+  /// adapter, safety policy, and runtime options. [emit] is the event
+  /// sink used to broadcast lifecycle events. Optional overrides for
+  /// [capture], [compressor], [executor], [screenshotCapture], and
+  /// [enhancer] allow dependency injection for testing.
   CopilotSession({
     required this.goal,
     required this.config,
@@ -25,9 +47,13 @@ class CopilotSession {
     SceneCapture? capture,
     SceneCompressor? compressor,
     ActionExecutor? executor,
+    ScreenshotCapture? screenshotCapture,
+    SceneEnhancer? enhancer,
   })  : _capture = capture ?? SceneCapture(),
         _compressor = compressor ?? const SceneCompressor(),
-        _executor = executor ?? ActionExecutor(capture: capture);
+        _executor = executor ?? ActionExecutor(capture: capture),
+        _screenshotCapture = screenshotCapture ?? ScreenshotCapture(),
+        _enhancer = enhancer ?? const SceneEnhancer();
 
   /// User goal for this run.
   final String goal;
@@ -40,84 +66,168 @@ class CopilotSession {
   final SceneCapture _capture;
   final SceneCompressor _compressor;
   final ActionExecutor _executor;
+  final ScreenshotCapture _screenshotCapture;
+  final SceneEnhancer _enhancer;
 
   /// Runs the session to a terminal result.
   Future<CopilotRunResult> run() async {
+    final startTime = DateTime.now();
+    var steps = 0;
+    var executedActions = 0;
     emit(CopilotStarted(goal));
-    final messages = <LlmMessage>[
-      LlmMessage.system(_systemPrompt),
-      LlmMessage.user('Goal: $goal'),
-    ];
+
+    final builder = const PromptBuilder();
+    final messages = <LlmMessage>[builder.buildSystemPrompt()];
+
+    final memoryStore = config.memoryStore;
+    if (memoryStore != null) {
+      final memories = await memoryStore.getRecent(
+        limit: config.memoryContextLimit,
+      );
+      if (memories.isNotEmpty) {
+        messages.add(builder.buildMemoryMessage(memories));
+      }
+    }
+
+    messages.add(builder.buildGoalMessage(goal));
+
+    final actionResults = <Map<String, Object?>>[];
 
     for (var step = 0; step < config.maxSteps; step++) {
+      steps++;
       final scene = _observe();
       emit(CopilotSceneCaptured(scene));
-      messages.add(
-          LlmMessage.user('Current screen JSON:\n${scene.toCompactJson()}'));
+
+      String sceneJson;
+      if (config.enableScreenshots) {
+        final screenshotBase64 = await _screenshotCapture.captureAsBase64();
+        final shouldAttachScreenshot =
+            !config.screenshotAsFallback || scene.nodes.length < 5;
+        sceneJson = jsonEncode(
+          _enhancer.enhanceSceneWithScreenshot(
+            scene,
+            base64Screenshot: shouldAttachScreenshot ? screenshotBase64 : null,
+          ),
+        );
+      } else {
+        sceneJson = scene.toCompactJson();
+      }
+      messages.add(builder.buildSceneMessage(sceneJson));
 
       final LlmResponse response;
       emit(CopilotLlmRequestStarted(step + 1));
       try {
-        response =
-            await config.llm.complete(messages: messages, tools: copilotTools);
+        final retryConfig = config.retryConfig;
+        if (retryConfig != null) {
+          final retry = RetryEngine(retryConfig);
+          response = await retry.run(
+            () => config.llm.complete(messages: messages, tools: copilotTools),
+          );
+        } else {
+          response =
+              await config.llm.complete(messages: messages, tools: copilotTools);
+        }
       } catch (error) {
         final reason = 'LLM request failed: $error';
         emit(CopilotLlmRequestFailed(step + 1, reason));
-        emit(CopilotFinished(reason));
-        return CopilotFailed(reason);
+        return _finish(reason,
+            startTime: startTime, steps: steps, executedActions: executedActions);
       }
       emit(CopilotLlmRequestSucceeded(step + 1));
 
       final toolCalls = response.allToolCalls;
       if (toolCalls.isEmpty) {
-        final result =
-            CopilotFailed('Model did not call a tool: ${response.content}');
-        emit(CopilotFinished(result.reason));
-        return result;
+        return _finish(
+          'Model did not call a tool: ${response.content}',
+          startTime: startTime,
+          steps: steps,
+          executedActions: executedActions,
+        );
       }
 
-      final actionResults = <Map<String, Object?>>[];
       var latestScene = scene;
+
+      final parsedCalls = <MapEntry<LlmToolCall, CopilotAction>>[];
       for (final toolCall in toolCalls) {
         final CopilotAction action;
         try {
           action =
               CopilotAction.fromToolCall(toolCall.name, toolCall.arguments);
         } catch (error) {
-          final reason = 'Model returned an invalid tool call: $error';
-          emit(CopilotFinished(reason));
-          return CopilotFailed(reason);
+          return _finish(
+            'Model returned an invalid tool call: $error',
+            startTime: startTime,
+            steps: steps,
+            executedActions: executedActions,
+            actions: actionResults,
+          );
         }
+        parsedCalls.add(MapEntry(toolCall, action));
         emit(CopilotActionPlanned(action));
+      }
 
-        switch (action) {
+      for (final entry in parsedCalls) {
+        switch (entry.value) {
           case DoneAction(:final summary):
             if (toolCalls.length > 1) {
-              final reason = 'done must be the only tool call in a response.';
-              emit(CopilotFinished(reason));
-              return CopilotFailed(reason);
+              return _finish(
+                'done must be the only tool call in a response.',
+                startTime: startTime,
+                steps: steps,
+                executedActions: executedActions,
+                actions: actionResults,
+              );
             }
             emit(CopilotFinished(summary));
+            final collector = config.metricsCollector;
+            if (collector != null) {
+              collector.record(CopilotMetrics(
+                goal: goal,
+                startTime: startTime,
+                endTime: DateTime.now(),
+                steps: steps,
+                actionsExecuted: executedActions,
+                succeeded: true,
+              ));
+            }
+            final store = config.memoryStore;
+            if (store != null) {
+              await store.add(MemoryEntry(
+                goal: goal,
+                result: summary,
+                timestamp: DateTime.now(),
+              ));
+            }
             return CopilotCompleted(summary);
           case FailAction(:final reason):
             if (toolCalls.length > 1) {
-              final message = 'fail must be the only tool call in a response.';
-              emit(CopilotFinished(message));
-              return CopilotFailed(message);
+              return _finish(
+                'fail must be the only tool call in a response.',
+                startTime: startTime,
+                steps: steps,
+                executedActions: executedActions,
+                actions: actionResults,
+              );
             }
-            emit(CopilotFinished(reason));
-            return CopilotFailed(reason);
+            return _finish(reason,
+                startTime: startTime,
+                steps: steps,
+                executedActions: executedActions,
+                actions: actionResults);
           case RequestConfirmationAction(:final reason):
             if (toolCalls.length > 1) {
-              final message =
-                  'request_confirmation must be the only tool call in a response.';
-              emit(CopilotFinished(message));
-              return CopilotFailed(message);
+              return _finish(
+                'request_confirmation must be the only tool call in a response.',
+                startTime: startTime,
+                steps: steps,
+                executedActions: executedActions,
+                actions: actionResults,
+              );
             }
             final approved = await _requestConfirmation(reason);
             actionResults.add(<String, Object?>{
-              'tool': toolCall.name,
-              'arguments': toolCall.arguments,
+              'tool': entry.key.name,
+              'arguments': entry.key.arguments,
               'result': <String, Object?>{
                 'success': approved,
                 'message': approved
@@ -127,63 +237,228 @@ class CopilotSession {
               },
             });
             if (!approved) {
-              const message = 'Confirmation denied.';
-              emit(CopilotFinished(message));
+              emit(const CopilotFinished('Confirmation denied.'));
+              final collector = config.metricsCollector;
+              if (collector != null) {
+                collector.record(CopilotMetrics(
+                  goal: goal,
+                  startTime: startTime,
+                  endTime: DateTime.now(),
+                  steps: steps,
+                  actionsExecuted: executedActions,
+                  succeeded: false,
+                  failureReason: 'Confirmation denied.',
+                ));
+              }
+              final store = config.memoryStore;
+              if (store != null) {
+                await store.add(MemoryEntry(
+                  goal: goal,
+                  result: 'Confirmation denied.',
+                  timestamp: DateTime.now(),
+                ));
+              }
               return const CopilotCancelled();
             }
-            break;
           default:
             break;
         }
+      }
 
-        if (action is RequestConfirmationAction) {
+      var idx = 0;
+      while (idx < parsedCalls.length) {
+        final entry = parsedCalls[idx];
+
+        if (entry.value is RequestConfirmationAction) {
+          idx++;
           continue;
         }
 
-        final safety = config.safetyPolicy.evaluate(action, latestScene);
-        if (!safety.allowed) {
-          final reason = safety.reason ?? 'Action blocked by safety policy.';
-          if (!safety.requiresConfirmation) {
-            emit(CopilotFinished(reason));
-            return CopilotFailed(reason);
+        if (_isIndependent(entry.key)) {
+          final batch = <MapEntry<LlmToolCall, CopilotAction>>[];
+          while (idx < parsedCalls.length &&
+              parsedCalls[idx].value is! RequestConfirmationAction &&
+              _isIndependent(parsedCalls[idx].key)) {
+            batch.add(parsedCalls[idx]);
+            idx++;
           }
-          if (config.accessMode != CopilotAccessMode.fullAccess) {
-            final approved = await _requestConfirmation(
-              reason,
-              action: action,
-              scene: latestScene,
-            );
-            if (!approved) {
-              emit(CopilotFinished(reason));
-              return CopilotFailed(reason);
+
+          for (final b in batch) {
+            final safety =
+                config.safetyPolicy.evaluate(b.value, latestScene);
+            if (!safety.allowed) {
+              final reason =
+                  safety.reason ?? 'Action blocked by safety policy.';
+              if (!safety.requiresConfirmation) {
+                return _finish(reason,
+                    startTime: startTime,
+                    steps: steps,
+                    executedActions: executedActions,
+                    actions: actionResults);
+              }
+              if (config.accessMode != CopilotAccessMode.fullAccess) {
+                final approved = await _requestConfirmation(
+                  reason,
+                  action: b.value,
+                  scene: latestScene,
+                );
+                if (!approved) {
+                  return _finish(reason,
+                      startTime: startTime,
+                      steps: steps,
+                      executedActions: executedActions,
+                      actions: actionResults);
+                }
+              }
             }
           }
-        }
 
-        final actionResult = await _executor.execute(action, latestScene);
-        emit(CopilotActionExecuted(action, actionResult));
-        actionResults.add(<String, Object?>{
-          'tool': toolCall.name,
-          'arguments': toolCall.arguments,
-          'result': actionResult.toJson(),
-        });
-        if (!actionResult.success && !actionResult.recoverable) {
-          emit(CopilotFinished(actionResult.message));
-          return CopilotFailed(actionResult.message);
-        }
+          final results = await Future.wait(
+            batch.map((b) async {
+              final ActionResult actionResult;
+              if (b.value is UnknownAction) {
+                final handler = config.customActions[b.value.name];
+                if (handler != null) {
+                  actionResult = await handler
+                      .execute(CustomAction.fromUnknown(b.value as UnknownAction));
+                } else {
+                  actionResult = await _executor.execute(b.value, latestScene);
+                }
+              } else {
+                actionResult = await _executor.execute(b.value, latestScene);
+              }
+              return MapEntry(b, actionResult);
+            }).toList(),
+          );
 
-        await _waitForUiSettle();
-        latestScene = _observe();
+          for (final result in results) {
+            final action = result.key.value;
+            final actionResult = result.value;
+            emit(CopilotActionExecuted(action, actionResult));
+            executedActions++;
+            actionResults.add(<String, Object?>{
+              'tool': result.key.key.name,
+              'arguments': result.key.key.arguments,
+              'result': actionResult.toJson(),
+            });
+            if (!actionResult.success && !actionResult.recoverable) {
+              return _finish(actionResult.message,
+                  startTime: startTime,
+                  steps: steps,
+                  executedActions: executedActions,
+                  actions: actionResults);
+            }
+          }
+
+          await _waitForUiSettle();
+          latestScene = _observe();
+        } else {
+          final action = entry.value;
+
+          final safety =
+              config.safetyPolicy.evaluate(action, latestScene);
+          if (!safety.allowed) {
+            final reason =
+                safety.reason ?? 'Action blocked by safety policy.';
+            if (!safety.requiresConfirmation) {
+              return _finish(reason,
+                  startTime: startTime,
+                  steps: steps,
+                  executedActions: executedActions,
+                  actions: actionResults);
+            }
+            if (config.accessMode != CopilotAccessMode.fullAccess) {
+              final approved = await _requestConfirmation(
+                reason,
+                action: action,
+                scene: latestScene,
+              );
+              if (!approved) {
+                return _finish(reason,
+                    startTime: startTime,
+                    steps: steps,
+                    executedActions: executedActions,
+                    actions: actionResults);
+              }
+            }
+          }
+
+          final ActionResult actionResult;
+          if (action is UnknownAction) {
+            final handler = config.customActions[action.name];
+            if (handler != null) {
+              actionResult =
+                  await handler.execute(CustomAction.fromUnknown(action));
+            } else {
+              actionResult = await _executor.execute(action, latestScene);
+            }
+          } else {
+            actionResult = await _executor.execute(action, latestScene);
+          }
+          emit(CopilotActionExecuted(action, actionResult));
+          executedActions++;
+          actionResults.add(<String, Object?>{
+            'tool': entry.key.name,
+            'arguments': entry.key.arguments,
+            'result': actionResult.toJson(),
+          });
+          if (!actionResult.success && !actionResult.recoverable) {
+            return _finish(actionResult.message,
+                startTime: startTime,
+                steps: steps,
+                executedActions: executedActions,
+                actions: actionResults);
+          }
+
+          await _waitForUiSettle();
+          latestScene = _observe();
+          idx++;
+        }
       }
 
-      messages.add(LlmMessage.assistant(
-          'Selected actions JSON:\n${jsonEncode(actionResults)}'));
-      messages.add(LlmMessage.user(
-          'Action results JSON:\n${jsonEncode(actionResults.map((entry) => entry['result']).toList())}'));
+      messages.addAll(builder.buildActionResultMessages(actionResults));
     }
 
-    emit(CopilotFinished('Maximum step count exceeded.'));
+    await _finish(
+      'Maximum step count exceeded.',
+      startTime: startTime,
+      steps: steps,
+      executedActions: executedActions,
+      actions: actionResults,
+    );
     return CopilotMaxStepsExceeded(config.maxSteps);
+  }
+
+  Future<CopilotFailed> _finish(
+    String reason, {
+    required DateTime startTime,
+    required int steps,
+    required int executedActions,
+    bool succeeded = false,
+    List<Map<String, Object?>> actions = const [],
+  }) async {
+    emit(CopilotFinished(reason));
+    final collector = config.metricsCollector;
+    if (collector != null) {
+      collector.record(CopilotMetrics(
+        goal: goal,
+        startTime: startTime,
+        endTime: DateTime.now(),
+        steps: steps,
+        actionsExecuted: executedActions,
+        succeeded: succeeded,
+        failureReason: succeeded ? null : reason,
+      ));
+    }
+    final store = config.memoryStore;
+    if (store != null) {
+      await store.add(MemoryEntry(
+        goal: goal,
+        result: reason,
+        timestamp: DateTime.now(),
+      ));
+    }
+    return CopilotFailed(reason);
   }
 
   SceneGraph _observe() => _compressor.compress(_capture.capture());
@@ -229,6 +504,13 @@ class CopilotSession {
     return null;
   }
 
+  static bool _isIndependent(LlmToolCall tc) {
+    return switch (tc.name) {
+      'type_text' || 'clear_text' || 'replace_text' || 'tap' => true,
+      _ => false,
+    };
+  }
+
   Future<void> _waitForUiSettle() async {
     if (config.settleDelay == Duration.zero) {
       await Future<void>.value();
@@ -242,44 +524,3 @@ class CopilotSession {
     await Future<void>.delayed(config.settleDelay);
   }
 }
-
-const _systemPrompt = '''
-You are flutter_copilot: an invisible automation agent running inside a Flutter app.
-The user gives a goal. You receive the current UI as compact JSON, not pixels.
-Act autonomously. Do not ask follow-up questions when the UI gives enough information.
-Lead the run as both planner and doer. For complex goals, keep a short internal task list, complete one task at a time, verify it on the latest screen, then move to the next unfinished task.
-Prefer tool calls over narrating plans. Finish only when every required task is done.
-
-How to choose actions:
-- Use only visible node ids from the latest screen JSON.
-- Prefer labels, values, hints, flags, and actions over guessing from position.
-- Use the smallest reliable path: tap, type_text, scroll, wait, then observe.
-- If the next required node is not visible, navigate or scroll until it is visible.
-- If the UI is loading, animating, or disabled, call wait.
-- Use long_press only when the UI convention or goal clearly needs a context menu, drag handle, or press-and-hold control.
-- Use clear_text, replace_text, and set_text_selection for text editing instead of fragile select_all plus backspace sequences.
-- Use keyboard_action only for an active focused text/input flow, for example backspace, enter, done, search, next, previous, escape, tab, or select_all.
-- For navigation back, prefer a visible Back/Close/Cancel node. Use system_back only when the goal clearly requires leaving the current route/dialog and no text input is focused.
-- Use adjust_value when a node exposes increase/decrease actions. Use slider_to_value for slider-like controls when a target value can be mapped to 0.0-1.0.
-- Use drag for gestures that are actually gesture-driven: swipe buttons, swipe-to-dismiss, carousels, maps, drag handles, and pull-to-refresh. For pull-to-refresh, drag down on the scrollable content and then wait.
-- Use long_press_drag for reorder handles and controls that must be held before dragging.
-- Use dismiss for dismissible nodes; it will use semantics when possible and drag fallback otherwise.
-- If you are worried or think a step is too risky, sensitive, destructive, privacy-related, account-related, payment-related, or needs approval, call request_confirmation before continuing with the plan.
-
-Batching:
-- You may call multiple tools in one response when every target is already visible on the current screen and the actions do not depend on each other.
-- Good batches: fill two visible text fields; toggle two visible switches; tap independent visible controls.
-- Do not batch across navigation, dialogs, route changes, search results, scrolling, or any action whose result must reveal the next target.
-- Never include done or fail in a batch. done/fail must be the only tool call.
-
-Verification:
-- Never assume an action worked. After actions, you will receive a fresh screen.
-- Call done only after the latest screen proves the user goal is complete.
-- If a control already has the requested value, do not toggle it; use done or continue.
-- If an action fails, recover once if the screen offers a clear alternate path.
-
-Safety:
-- Do not perform destructive, payment, logout, account deletion, transfer, purchase, or irreversible actions unless the user's goal explicitly requests that final action and the safety policy allows it.
-- If a destructive task needs confirmation, navigate up to the confirmation point and call request_confirmation before taking the final sensitive action.
-- If the goal is impossible from the current UI, call fail with a brief reason.
-''';

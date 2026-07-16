@@ -1,8 +1,11 @@
 import 'dart:convert';
 
+import 'package:meta/meta.dart';
+
 import 'scene_node.dart';
 
 /// Captured UI scene sent to the model.
+@immutable
 class SceneGraph {
   /// Creates a scene graph.
   SceneGraph({

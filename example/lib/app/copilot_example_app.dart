@@ -26,7 +26,7 @@ class _CopilotExampleAppState extends State<CopilotExampleApp> {
     super.didChangeDependencies();
     if (_state != null) return;
     final controller = CopilotController.of(context);
-    _state = AppState(controller)..addListener(() => setState(() {}));
+    _state = AppState(controller);
   }
 
   @override
@@ -62,8 +62,12 @@ class _CopilotExampleAppState extends State<CopilotExampleApp> {
             debugShowCheckedModeBanner: false,
             navigatorKey: demoNavigatorKey,
             title: 'flutter_copilot demo',
-            theme: (state.darkMode ? AppTheme.dark : AppTheme.light)
-                .copyWith(colorScheme: colors),
+            theme: (state.darkMode ? AppTheme.dark : AppTheme.light).copyWith(
+              colorScheme: colors,
+              visualDensity: state.compactMode
+                  ? VisualDensity.compact
+                  : VisualDensity.standard,
+            ),
             home: MediaQuery(
               data: MediaQuery.of(context).copyWith(
                 textScaler: TextScaler.linear(state.fontScale),

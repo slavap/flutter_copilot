@@ -10,11 +10,14 @@ dependencies:
     sdk: flutter
   flutter_copilot:
     path: ..
+  envied: ^1.0.0
 
 dev_dependencies:
   flutter_test:
     sdk: flutter
   lints: ^6.1.0
+  build_runner: ^2.4.0
+  envied_generator: ^1.0.0
 
 flutter:
   uses-material-design: true

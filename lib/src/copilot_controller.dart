@@ -8,19 +8,44 @@ import 'copilot_run_result.dart';
 import 'copilot_session.dart';
 
 /// Runs natural-language goals against the current Flutter UI.
+///
+/// The controller owns the observe-plan-act loop: it captures the screen
+/// via the semantics tree, sends it to an LLM, and executes the returned
+/// actions. At most one [run] can be active at a time.
+///
+/// ```dart
+/// final controller = CopilotController(CopilotConfig(llm: myLlm));
+/// final result = await controller.run('Tap the settings icon');
+/// switch (result) {
+///   case CopilotCompleted(:final summary): print(summary);
+///   case CopilotFailed(:final reason): print('Failed: $reason');
+///   case CopilotCancelled(): print('Cancelled');
+///   case CopilotMaxStepsExceeded(:final steps): print('Hit $steps steps');
+/// }
+/// controller.dispose();
+/// ```
 class CopilotController {
   /// Creates a controller with [config].
   CopilotController(this.config);
 
   /// Runtime configuration used for new runs.
   final CopilotConfig config;
+
   final _events = StreamController<CopilotEvent>.broadcast();
+
   Future<CopilotRunResult>? _activeRun;
 
   /// Broadcast stream of progress and lifecycle events.
+  ///
+  /// Emits [CopilotStarted], [CopilotSceneCaptured], [CopilotLlmRequestStarted],
+  /// and other lifecycle events while a run is in progress.
   Stream<CopilotEvent> get events => _events.stream;
 
   /// Looks up the nearest controller provided by [CopilotApp].
+  ///
+  /// Throws a [StateError] if no [CopilotApp] ancestor exists in the widget
+  /// tree. This is typically called from a widget's build method or an
+  /// event handler.
   static CopilotController of(BuildContext context) {
     final scope = context.dependOnInheritedWidgetOfExactType<CopilotScope>();
     if (scope == null) {
@@ -31,6 +56,10 @@ class CopilotController {
   }
 
   /// Runs [goal] until completion, failure, or max steps.
+  ///
+  /// The observe-plan-act loop runs up to [CopilotConfig.maxSteps] times.
+  /// Returns a [CopilotRunResult] indicating the outcome. Only one run can
+  /// be active at a time; concurrent calls return [CopilotFailed].
   Future<CopilotRunResult> run(String goal) {
     final trimmedGoal = goal.trim();
     if (trimmedGoal.isEmpty) {
@@ -56,6 +85,9 @@ class CopilotController {
   }
 
   /// Releases event stream resources.
+  ///
+  /// Must be called when the controller is no longer needed to avoid
+  /// stream leaks. Typically called in [State.dispose].
   void dispose() {
     _events.close();
   }
@@ -94,6 +126,9 @@ class CopilotController {
 }
 
 /// Inherited widget that stores the nearest [CopilotController].
+///
+/// Created by [CopilotApp] and injected into the widget tree. Use
+/// [CopilotController.of] to retrieve the controller from descendant widgets.
 class CopilotScope extends InheritedWidget {
   /// Provides [controller] to a subtree.
   const CopilotScope({
@@ -102,7 +137,7 @@ class CopilotScope extends InheritedWidget {
     super.key,
   });
 
-  /// Controller exposed to descendants.
+  /// Controller exposed to descendants via [CopilotController.of].
   final CopilotController controller;
 
   @override

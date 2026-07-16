@@ -1,3 +1,5 @@
+import 'package:meta/meta.dart';
+
 import '../actions/action_result.dart';
 import '../actions/copilot_action.dart';
 import '../scene/scene_graph.dart';
@@ -9,6 +11,7 @@ sealed class CopilotEvent {
 }
 
 /// Emitted when a run starts.
+@immutable
 class CopilotStarted extends CopilotEvent {
   /// Creates a start event.
   const CopilotStarted(this.goal);
@@ -18,6 +21,7 @@ class CopilotStarted extends CopilotEvent {
 }
 
 /// Emitted after the UI scene is captured.
+@immutable
 class CopilotSceneCaptured extends CopilotEvent {
   /// Creates a scene-captured event.
   const CopilotSceneCaptured(this.scene);
@@ -27,6 +31,7 @@ class CopilotSceneCaptured extends CopilotEvent {
 }
 
 /// Emitted before an LLM request.
+@immutable
 class CopilotLlmRequestStarted extends CopilotEvent {
   /// Creates an LLM request start event.
   const CopilotLlmRequestStarted(this.step);
@@ -36,6 +41,7 @@ class CopilotLlmRequestStarted extends CopilotEvent {
 }
 
 /// Emitted after an LLM request succeeds.
+@immutable
 class CopilotLlmRequestSucceeded extends CopilotEvent {
   /// Creates an LLM request success event.
   const CopilotLlmRequestSucceeded(this.step);
@@ -45,6 +51,7 @@ class CopilotLlmRequestSucceeded extends CopilotEvent {
 }
 
 /// Emitted after an LLM request fails.
+@immutable
 class CopilotLlmRequestFailed extends CopilotEvent {
   /// Creates an LLM request failure event.
   const CopilotLlmRequestFailed(this.step, this.message);
@@ -57,6 +64,7 @@ class CopilotLlmRequestFailed extends CopilotEvent {
 }
 
 /// Emitted when the model selects an action.
+@immutable
 class CopilotActionPlanned extends CopilotEvent {
   /// Creates an action-planned event.
   const CopilotActionPlanned(this.action);
@@ -66,6 +74,7 @@ class CopilotActionPlanned extends CopilotEvent {
 }
 
 /// Emitted after an action executes.
+@immutable
 class CopilotActionExecuted extends CopilotEvent {
   /// Creates an action-executed event.
   const CopilotActionExecuted(this.action, this.result);
@@ -78,6 +87,7 @@ class CopilotActionExecuted extends CopilotEvent {
 }
 
 /// Emitted when the copilot asks for confirmation.
+@immutable
 class CopilotConfirmationRequested extends CopilotEvent {
   /// Creates a confirmation-requested event.
   const CopilotConfirmationRequested(this.reason);
@@ -87,6 +97,7 @@ class CopilotConfirmationRequested extends CopilotEvent {
 }
 
 /// Emitted after confirmation is approved or denied.
+@immutable
 class CopilotConfirmationResolved extends CopilotEvent {
   /// Creates a confirmation-resolved event.
   const CopilotConfirmationResolved(this.approved);
@@ -96,6 +107,7 @@ class CopilotConfirmationResolved extends CopilotEvent {
 }
 
 /// Emitted when a run finishes.
+@immutable
 class CopilotFinished extends CopilotEvent {
   /// Creates a finish event.
   const CopilotFinished(this.message);

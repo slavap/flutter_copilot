@@ -2,12 +2,12 @@ import 'package:flutter/material.dart';
 
 import '../state/app_state.dart';
 
-class AppStateScope extends InheritedWidget {
+class AppStateScope extends InheritedNotifier<AppState> {
   const AppStateScope({
     required this.state,
     required super.child,
     super.key,
-  });
+  }) : super(notifier: state);
 
   final AppState state;
 
@@ -16,7 +16,4 @@ class AppStateScope extends InheritedWidget {
     assert(scope != null, 'No AppStateScope found in context');
     return scope!.state;
   }
-
-  @override
-  bool updateShouldNotify(AppStateScope oldWidget) => state != oldWidget.state;
 }

@@ -3,22 +3,23 @@
 Interactive demo app for `flutter_copilot` using the real
 `OpenAILlmAdapter`.
 
-Run it with an OpenAI API key:
+Create `example/.env`:
 
-```bash
-fvm flutter run -d linux \
-  --dart-define=OPENAI_API_KEY=your_key_here \
-  --dart-define=OPENAI_MODEL=gpt-4.1
+```dotenv
+OPENAI_API_KEY=your_key_here
+OPENAI_MODEL=gpt-4.1
+OPENAI_ENDPOINT=
 ```
 
-For an OpenAI-compatible provider:
+Then generate the Envied file and run:
 
 ```bash
-fvm flutter run -d linux \
-  --dart-define=OPENAI_API_KEY=your_provider_key_here \
-  --dart-define=OPENAI_MODEL=openrouter/auto \
-  --dart-define=OPENAI_ENDPOINT=https://openrouter.ai/api/v1/chat/completions
+fvm dart run build_runner build
+fvm flutter run -d linux
 ```
+
+For an OpenAI-compatible provider, set `OPENAI_MODEL` and `OPENAI_ENDPOINT`
+in `.env`.
 
 Try prompts such as:
 

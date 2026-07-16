@@ -1,3 +1,18 @@
+## 0.12.0
+
+- Added retry/recovery engine with configurable exponential backoff for transient LLM failures.
+- Added custom tools extension API — register `CustomActionHandler` implementations for developer-defined actions.
+- Added analytics/metrics collection with `CopilotMetrics` and `MetricsCollector` for success rates, duration, and step counts.
+- Added conversation memory engine with `MemoryStore` interface and `InMemoryStore` for multi-turn context.
+- Added parallel action execution — independent batched actions run concurrently via `Future.wait`.
+- Added optional screenshot fallback for widgets with poor semantics.
+- Added `@immutable` annotations to all immutable classes.
+- Added dartdoc comments to all public APIs with code examples.
+- Added Limitations, Performance, and Migration Guide sections to README.
+- Refactored `CopilotSession` — extracted `PromptBuilder`, DRY terminal states with `_finish()` helper.
+- Fixed hardcoded pointer IDs in `ActionExecutor` — now uses auto-incrementing counter.
+- Fixed missing exports for `CustomAction` and `CustomActionHandler`.
+
 ## 0.11.0
 
 - Expanded action set to 18 types: tap, long_press, type_text, clear_text, replace_text, set_text_selection, keyboard_action, scroll, drag, long_press_drag, slider_to_value, adjust_value, dismiss, system_back, request_confirmation, wait, done, fail.
